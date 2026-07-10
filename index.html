@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QRスタンプラリー</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      background-color: #f0f2f5;
+    }
+    .container {
+      text-align: center;
+      background: white;
+      padding: 2em;
+      border-radius: 8px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      max-width: 400px;
+      width: 90%;
+    }
+    input {
+      padding: 0.7em;
+      margin-bottom: 0.8em;
+      width: 90%;
+      font-size: 16px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+    }
+    button {
+      padding: 0.7em 1.5em;
+      cursor: pointer;
+      font-size: 16px;
+      background-color: #1a73e8;
+      color: white;
+      border: none;
+      border-radius: 4px;
+    }
+    button:disabled {
+      background-color: #aaa;
+    }
+    #status-message {
+      font-weight: bold;
+      line-height: 1.6;
+    }
+    #id-input-section {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div id="status-section">
+      <h1>QRスタンプラリー</h1>
+      <p id="status-message">データを読み込んでいます...</p>
+    </div>
+
+    <div id="id-input-section">
+      <h2>Robloxユーザー名を入力</h2>
+      <input type="text" id="roblox-username-input" placeholder="例: roblox_user123">
+      <br>
+      <button id="save-button" onclick="saveUsername()">保存してスタンプを記録</button>
+    </div>
+  </div>
+
+  <script>
+    // ▼▼▼ 設定：GASウェブアプリのURL（/exec で終わるもの） ▼▼▼
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbyJ5ou_wWGgmv1ReOhqMIPB2YFlNLaSRCjIS2QzTdRRmDUM6QXFQ4pOc6MIfZhyEv2I/exec";
+    // ▲▲▲ 設定ここまで ▲▲▲
+
+    // ローカルストレージに保存する際のキー
+    const STORAGE_KEY = 'robloxUsername';
+
+    const statusSection = document.getElementById('status-section');
+    const inputSection = document.getElementById('id-input-section');
+    const usernameInput = document.getElementById('roblox-username-input');
+    const saveButton = document.getElementById('save-button');
+
+    // URLの ?stampId=XXX からStampIDを取得する
+    function getStampIdFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('stampId');
+    }
+
+    // ページ読み込み時のメイン処理
+    window.addEventListener('load', function() {
+      const stampId = getStampIdFromUrl();
+      const username = localStorage.getItem(STORAGE_KEY);
+
+      if (!stampId) {
+        displayMessage('エラー: QRコードが無効です。');
+        return;
+      }
+
+      if (username) {
+        displayMessage('ようこそ！ユーザー名: ' + username + ' のスタンプを記録します...');
+        processStamp(username, stampId);
+      } else {
+        showInputForm();
+      }
+    });
+
+    // ユーザーが入力したユーザー名でスタンプ処理を開始する
+    function saveUsername() {
+      const username = usernameInput.value.trim();
+      if (username) {
+        processStamp(username, getStampIdFromUrl());
+      } else {
+        alert('ユーザー名を入力してください。');
+      }
+    }
+
+    // GASのAPIを呼び出してスタンプを記録する
+    async function processStamp(username, stampId) {
+      inputSection.style.display = 'none';
+      statusSection.style.display = 'block';
+      displayMessage('サーバーと通信しています...');
+
+      try {
+        const res = await fetch(GAS_URL, {
+          method: 'POST',
+          // Content-Typeをtext/plainにすることで、GASが受け付けられる形式になる
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({
+            action: 'recordStamp',
+            username: username,
+            stampId: stampId
+          })
+        });
+
+        if (!res.ok) {
+          throw new Error('サーバーの応答が異常です (HTTP ' + res.status + ')');
+        }
+
+        const response = await res.json();
+
+        if (response.status === 'success') {
+          displayMessage('✅ ' + response.message);
+          localStorage.setItem(STORAGE_KEY, username);
+        } else {
+          displayMessage('⚠️ ' + response.message);
+          localStorage.removeItem(STORAGE_KEY);
+          showInputForm();
+        }
+      } catch (error) {
+        displayMessage('❌ 通信エラー: ' + error.message + '\n電波の良い場所でもう一度お試しください。');
+        showInputForm();
+      }
+    }
+
+    // 入力フォームを表示する
+    function showInputForm() {
+      statusSection.style.display = 'block';
+      inputSection.style.display = 'block';
+    }
+
+    // 画面にメッセージを表示する
+    function displayMessage(message) {
+      document.getElementById('status-message').textContent = message;
+    }
+  </script>
+</body>
+</html>
