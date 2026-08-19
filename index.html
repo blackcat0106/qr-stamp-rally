@@ -36,6 +36,9 @@
       justify-content: center;
       align-items: center;
       text-align: center;
+      /* 端末幅によっては背景画像の描画がごく僅かに枠の外へにじむことがあるため、
+         確実に箱の内側でクリップする（見た目のはみ出し対策） */
+      overflow: hidden;
     }
     .card.state-input {
       background-image: url("frame-input.webp");
@@ -102,10 +105,65 @@
     button:active { transform: translateY(2px); border-bottom-width: 1px; }
     button:disabled { background-color: #C9BFAC; border-bottom-color: #A99F8C; }
     .hidden { display: none !important; }
+    .card.state-complete {
+      background-image: url("frame-done.webp");
+      padding: 15% 16% 13%;
+      animation: glow 1.8s ease-in-out infinite;
+    }
+    @keyframes glow {
+      0%, 100% { filter: drop-shadow(0 0 0 rgba(245,166,35,0)); }
+      50% { filter: drop-shadow(0 0 14px rgba(245,166,35,0.55)); }
+    }
+    .complete-badge {
+      font-size: clamp(38px, 11vw, 60px);
+      line-height: 1;
+      margin: 0 0 0.15em;
+      animation: pop 0.55s cubic-bezier(.34,1.56,.64,1);
+    }
+    @keyframes pop {
+      0% { transform: scale(0.3); opacity: 0; }
+      60% { transform: scale(1.15); opacity: 1; }
+      100% { transform: scale(1); }
+    }
+    #complete-section.repeat .complete-badge { animation: none; }
+    #complete-title {
+      font-size: clamp(17px, 4.7vw, 25px);
+      margin: 0 0 0.35em;
+      color: var(--honey-dark);
+    }
+    .complete-sub {
+      font-size: clamp(13px, 3.6vw, 16px);
+      font-weight: bold;
+      margin: 0 0 0.8em;
+      line-height: 1.5;
+    }
+    .pickup-box {
+      background: #FFFDF7;
+      border: 2px solid #E8C88A;
+      border-radius: 14px;
+      padding: 0.8em 0.9em;
+      max-width: 320px;
+    }
+    .pickup-label {
+      font-size: clamp(12px, 3.3vw, 14px);
+      font-weight: bold;
+      color: var(--honey-dark);
+      margin: 0 0 0.4em;
+    }
+    .pickup-text {
+      font-size: clamp(12.5px, 3.4vw, 14.5px);
+      line-height: 1.7;
+      margin: 0;
+    }
+    .pickup-text strong { color: #C0392B; }
     @media (max-height: 560px) {
       .card { min-height: 0; }
       .card.state-input { padding: 19% 15% 13%; }
       .card.state-status { padding: 15% 14% 15%; }
+      .card.state-complete { padding: 12% 14% 9%; }
+      .complete-badge { font-size: clamp(28px, 8vw, 44px); margin-bottom: 0.05em; }
+      .complete-sub { margin-bottom: 0.5em; }
+      .pickup-box { padding: 0.6em 0.75em; }
     }
   </style>
 </head>
@@ -124,6 +182,18 @@
       <button id="save-button" onclick="saveUsername()">スタンプを記録する</button>
       <p class="hint">Robloxで使っている名前を入力してね</p>
     </div>
+
+    <div id="complete-section" class="hidden">
+      <div class="complete-badge" id="complete-badge">🎉</div>
+      <h1 id="complete-title">コンプリート達成！</h1>
+      <p id="complete-sub" class="complete-sub">3つのスタンプ、全部そろったよ！</p>
+      <div class="pickup-box">
+        <p class="pickup-label">🎁 受け取り場所</p>
+        <p class="pickup-text">Robloxゲーム内「<strong>ピトンの小屋</strong>」の<br>
+        UGC置き場（「UGC!!」の看板とマネキンが目印）へ行って、<br>
+        「受け取る」のボタンを押してね！</p>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -133,6 +203,17 @@
 
     // ローカルストレージに保存する際のキー
     const STORAGE_KEY = 'robloxUsername';
+    // コンプリート演出を「もう見せた」印を付けておくキーの接頭辞（ユーザー名ごとに保存）
+    const COMPLETE_FLAG_PREFIX = 'stampRallyCompleteShown:';
+
+    // 全スタンプのStampID一覧
+    // ※コンプリート判定には使わない（判定はGAS側の応答に一本化。isComplete()参照）。
+    //   isComplete()内のフォールバック計算にのみ使用する保険。
+    const VALID_STAMP_IDS = [
+      'EohdnkZXkc06nHE0FUcl', // Star
+      '7jRAq7mIqxP8apG7X3bw', // Heart
+      'VbzEC3WTJ0pLRxLki0Vu'  // Smile
+    ];
 
     const card = document.getElementById('card');
     const statusSection = document.getElementById('status-section');
@@ -140,6 +221,10 @@
     const usernameInput = document.getElementById('roblox-username-input');
     const saveButton = document.getElementById('save-button');
     const formNote = document.getElementById('form-note');
+    const completeSection = document.getElementById('complete-section');
+    const completeBadge = document.getElementById('complete-badge');
+    const completeTitle = document.getElementById('complete-title');
+    const completeSub = document.getElementById('complete-sub');
 
     // URLの ?stampId=XXX からStampIDを取得する
     function getStampIdFromUrl() {
@@ -181,6 +266,9 @@
       saveButton.disabled = true;
       displayMessage('サーバーと通信しています...');
 
+      let recordResponse = null;
+      let recordError = null;
+
       try {
         const res = await fetch(GAS_URL, {
           method: 'POST',
@@ -197,28 +285,113 @@
           throw new Error('サーバーの応答が異常です (HTTP ' + res.status + ')');
         }
 
-        const response = await res.json();
-
-        if (response.status === 'success') {
-          displayMessage('✅ ' + response.message);
-          localStorage.setItem(STORAGE_KEY, username);
-        } else {
-          localStorage.removeItem(STORAGE_KEY);
-          showInputForm('⚠️ ' + response.message);
-        }
+        recordResponse = await res.json();
       } catch (error) {
-        showInputForm('❌ 通信エラー: ' + error.message + '\n電波の良い場所でもう一度お試しください。');
-      } finally {
-        saveButton.disabled = false;
+        recordError = error;
       }
+
+      // 「そろったか」はまず記録リクエストの応答自体（recordResponse.complete）を見る。
+      // GAS側がrecordStampの応答にもcomplete等を含める設計になっているため、
+      // それだけで判定できれば2回目の通信（getStamps）はしない。
+      // （GASの応答は1回2〜4秒かかるため、2回叩くと最悪8秒近く待たせてしまう。
+      //   すでに全部そろっている人が同じQRを読み直して「記録済みエラー」になった場合も、
+      //   complete フィールドはこの応答に含まれているのでここで拾える）
+      let handledAsComplete = false;
+      if (recordResponse && typeof recordResponse.complete === 'boolean') {
+        handledAsComplete = maybeShowComplete(recordResponse, username);
+      } else if (recordResponse) {
+        // ▼フォールバック▼ GASがまだcomplete系フィールドを返さない場合だけ、
+        // 従来通りgetStampsを別途呼んで確認する（通信が1回増える）
+        displayMessage('確認しています...');
+        try {
+          handledAsComplete = await checkCompletionAndMaybeCelebrate(username);
+        } catch (error) {
+          handledAsComplete = false;
+        }
+      }
+
+      if (handledAsComplete) {
+        localStorage.setItem(STORAGE_KEY, username);
+      } else if (recordError) {
+        showInputForm('❌ 通信エラー: ' + recordError.message + '\n電波の良い場所でもう一度お試しください。');
+      } else if (recordResponse && recordResponse.status === 'success') {
+        displayMessage('✅ ' + recordResponse.message + buildRemainingHint(recordResponse));
+        localStorage.setItem(STORAGE_KEY, username);
+      } else if (recordResponse) {
+        localStorage.removeItem(STORAGE_KEY);
+        showInputForm('⚠️ ' + recordResponse.message);
+      } else {
+        showInputForm('❌ 通信エラーが発生しました。\n電波の良い場所でもう一度お試しください。');
+      }
+
+      saveButton.disabled = false;
+    }
+
+    // 「あと◯個」のヒントを組み立てる。GASの応答に collected / required が
+    // 含まれている場合だけ追加する（ページ内に必要数をハードコードしない）。
+    // 含まれていなければ何も追加しない＝これまでの表示のまま。
+    function buildRemainingHint(data) {
+      if (typeof data.collected !== 'number' || typeof data.required !== 'number') {
+        return '';
+      }
+      const remaining = data.required - data.collected;
+      if (remaining <= 0) return '';
+      return '\nあと' + remaining + '個！';
+    }
+
+    // 「スタンプが全部そろったか」の判定はGAS側の応答に一本化する（data.complete をそのまま使う）。
+    // 判定ロジックはこの関数1つに隔離しておく。
+    function isComplete(data) {
+      if (typeof data.complete === 'boolean') {
+        return data.complete;
+      }
+      // ▼フォールバック▼ GASがまだcompleteフィールドを返さない場合だけ、
+      // 従来通りstamps配列の中身をVALID_STAMP_IDSと突き合わせて数える。
+      // （GAS側の対応が完了している環境では通らない、移行期間だけの経路）
+      if (Array.isArray(data.stamps)) {
+        const ownedValid = new Set(data.stamps.filter(function (id) {
+          return VALID_STAMP_IDS.indexOf(id) !== -1;
+        }));
+        return ownedValid.size >= VALID_STAMP_IDS.length;
+      }
+      return false;
+    }
+
+    // dataが「コンプリート」を示していればコンプリート画面を表示する。
+    // 戻り値: true=コンプリート画面を表示した / false=未コンプリート
+    function maybeShowComplete(data, username) {
+      if (!isComplete(data)) {
+        return false;
+      }
+      const flagKey = COMPLETE_FLAG_PREFIX + username;
+      const alreadyShown = localStorage.getItem(flagKey) === 'true';
+      showComplete(!alreadyShown, data);
+      localStorage.setItem(flagKey, 'true');
+      return true;
+    }
+
+    // フォールバック専用: getStampsを別途呼んでコンプリート判定する
+    // （recordStampの応答にcomplete系フィールドが無い、古いGAS向け）
+    async function checkCompletionAndMaybeCelebrate(username) {
+      const url = GAS_URL + '?action=getStamps&username=' + encodeURIComponent(username);
+      const res = await fetch(url);
+      if (!res.ok) return false;
+
+      const data = await res.json();
+      if (!data || data.status !== 'success') {
+        return false;
+      }
+
+      return maybeShowComplete(data, username);
     }
 
     // 入力フォームを表示する（受付画面）
     // noteに文字列を渡すと、フォームの上に赤字のお知らせとして表示する
     function showInputForm(note) {
-      card.classList.remove('state-status');
+      card.classList.remove('state-status', 'state-complete');
       card.classList.add('state-input');
       statusSection.classList.add('hidden');
+      completeSection.classList.add('hidden');
       inputSection.classList.remove('hidden');
 
       if (note) {
@@ -232,10 +405,37 @@
 
     // メッセージ画面を表示する（記録しました画面）
     function showStatus() {
-      card.classList.remove('state-input');
+      card.classList.remove('state-input', 'state-complete');
       card.classList.add('state-status');
       inputSection.classList.add('hidden');
+      completeSection.classList.add('hidden');
       statusSection.classList.remove('hidden');
+    }
+
+    // コンプリート画面を表示する
+    // isNew: true=たった今全部そろった（お祝い演出） / false=前から全部そろっている（落ち着いた案内）
+    // data: GASの応答（あれば required 個数を表示に使う。無ければページ内ハードコードはせず個数表現自体を省く）
+    function showComplete(isNew, data) {
+      card.classList.remove('state-input', 'state-status');
+      card.classList.add('state-complete');
+      statusSection.classList.add('hidden');
+      inputSection.classList.add('hidden');
+      completeSection.classList.remove('hidden');
+
+      const required = (data && typeof data.required === 'number') ? data.required : null;
+      const countPhrase = required ? required + '個のスタンプ、' : 'スタンプが';
+
+      if (isNew) {
+        completeSection.classList.remove('repeat');
+        completeBadge.textContent = '🎉';
+        completeTitle.textContent = 'コンプリート達成！';
+        completeSub.textContent = countPhrase + '全部そろったよ！';
+      } else {
+        completeSection.classList.add('repeat');
+        completeBadge.textContent = '✅';
+        completeTitle.textContent = 'もう全部そろってるよ';
+        completeSub.textContent = 'まだの人はゲーム内でチェックしてね';
+      }
     }
 
     // 画面にメッセージを表示する
