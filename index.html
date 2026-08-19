@@ -206,6 +206,17 @@
     // コンプリート演出を「もう見せた」印を付けておくキーの接頭辞（ユーザー名ごとに保存）
     const COMPLETE_FLAG_PREFIX = 'stampRallyCompleteShown:';
 
+    // fetch1回あたりのタイムアウト（ミリ秒）。GASの応答は実測2〜4秒のため、
+    // 15秒あれば正常な通信を誤って切ることはない。これが無いと、通信が返らない時に
+    // 画面が「確認しています...」等で永久に固まってしまう。
+    const FETCH_TIMEOUT_MS = 15000;
+    // 同一ユーザーの連続登録制限に対する、自動リトライの待ち時間（秒）。
+    // GAS側の RATE_LIMIT_SECONDS（2026-08-19に10秒→3秒へ緩和）に安全マージンを足した値。
+    // ⚠GAS側の秒数を変えたら、ここも合わせて見直すこと。
+    const RATE_LIMIT_RETRY_WAIT_SEC = 5;
+    // 自動リトライの上限回数（無限リトライ防止）
+    const RATE_LIMIT_MAX_RETRIES = 3;
+
     // 全スタンプのStampID一覧
     // ※コンプリート判定には使わない（判定はGAS側の応答に一本化。isComplete()参照）。
     //   isComplete()内のフォールバック計算にのみ使用する保険。
@@ -244,7 +255,7 @@
 
       if (username) {
         displayMessage('ようこそ！\nユーザー名: ' + username + '\nスタンプを記録します...');
-        processStamp(username, stampId);
+        processStamp(username, stampId, 0);
       } else {
         showInputForm();
       }
@@ -254,23 +265,59 @@
     function saveUsername() {
       const username = usernameInput.value.trim();
       if (username) {
-        processStamp(username, getStampIdFromUrl());
+        processStamp(username, getStampIdFromUrl(), 0);
       } else {
         alert('ユーザー名を入力してください。');
       }
     }
 
+    // 指定ミリ秒だけ待つ
+    function sleep(ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+
+    // タイムアウト付きfetch。FETCH_TIMEOUT_MSを過ぎても応答が無い通信は
+    // AbortControllerで強制的に打ち切る（＝画面が永久に固まることを防ぐ）。
+    async function fetchWithTimeout(url, options) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(function () { controller.abort(); }, FETCH_TIMEOUT_MS);
+      try {
+        return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    // GAS側のレート制限エラー（「同一ユーザー10秒」）かどうかを判定する。
+    // ⚠GAS側の応答にエラー種別コード（例: errorCode: 'RATE_LIMIT'）が無いため、
+    //   現状はmessageの文字列一致で判定するしかない。GAS側にエラーコードを
+    //   足せば、この文字列一致より堅い判定にできる。
+    function isRateLimitMessage(message) {
+      return typeof message === 'string' && message.indexOf('早すぎます') !== -1;
+    }
+
+    // 「あとX秒で自動的にもう一度お試しします」のカウントダウンを表示しながら待つ
+    async function waitWithRetryCountdown(totalSeconds) {
+      for (let remaining = totalSeconds; remaining > 0; remaining--) {
+        displayMessage('少し待っています…（あと' + remaining + '秒）\n自動でもう一度お試しします');
+        await sleep(1000);
+      }
+    }
+
     // GASのAPIを呼び出してスタンプを記録する
-    async function processStamp(username, stampId) {
+    // retryCount: レート制限による自動リトライの現在の回数（RATE_LIMIT_MAX_RETRIESで上限）
+    async function processStamp(username, stampId, retryCount) {
+      retryCount = retryCount || 0;
       showStatus();
       saveButton.disabled = true;
       displayMessage('サーバーと通信しています...');
 
       let recordResponse = null;
       let recordError = null;
+      let isTimeout = false;
 
       try {
-        const res = await fetch(GAS_URL, {
+        const res = await fetchWithTimeout(GAS_URL, {
           method: 'POST',
           // Content-Typeをtext/plainにすることで、GASが受け付けられる形式になる
           headers: { 'Content-Type': 'text/plain' },
@@ -288,42 +335,73 @@
         recordResponse = await res.json();
       } catch (error) {
         recordError = error;
+        isTimeout = !!(error && error.name === 'AbortError');
       }
 
-      // 「そろったか」はまず記録リクエストの応答自体（recordResponse.complete）を見る。
-      // GAS側がrecordStampの応答にもcomplete等を含める設計になっているため、
-      // それだけで判定できれば2回目の通信（getStamps）はしない。
-      // （GASの応答は1回2〜4秒かかるため、2回叩くと最悪8秒近く待たせてしまう。
-      //   すでに全部そろっている人が同じQRを読み直して「記録済みエラー」になった場合も、
-      //   complete フィールドはこの応答に含まれているのでここで拾える）
+      // 「そろったか」の確認（フォールバック含む）は、記録が成功した時だけ行う。
+      // ⚠エラー応答（status !== 'success'）にはcompleteフィールドが無いため、
+      //   ここで判定しようとすると「記録が拒否されただけ」なのに完了確認の
+      //   フォールバック経路に迷い込んでしまう（今回の不具合の本丸）。
       let handledAsComplete = false;
-      if (recordResponse && typeof recordResponse.complete === 'boolean') {
-        handledAsComplete = maybeShowComplete(recordResponse, username);
-      } else if (recordResponse) {
-        // ▼フォールバック▼ GASがまだcomplete系フィールドを返さない場合だけ、
-        // 従来通りgetStampsを別途呼んで確認する（通信が1回増える）
-        displayMessage('確認しています...');
-        try {
-          handledAsComplete = await checkCompletionAndMaybeCelebrate(username);
-        } catch (error) {
-          handledAsComplete = false;
+      if (recordResponse && recordResponse.status === 'success') {
+        if (typeof recordResponse.complete === 'boolean') {
+          // 「そろったか」はまず記録リクエストの応答自体（recordResponse.complete）を見る。
+          // GAS側がrecordStampの応答にもcomplete等を含める設計になっているため、
+          // それだけで判定できれば2回目の通信（getStamps）はしない。
+          handledAsComplete = maybeShowComplete(recordResponse, username);
+        } else {
+          // ▼フォールバック▼ 記録は成功したが、GASがまだcomplete系フィールドを
+          // 返さない場合だけ、従来通りgetStampsを別途呼んで確認する（通信が1回増える）
+          displayMessage('確認しています...');
+          try {
+            handledAsComplete = await checkCompletionAndMaybeCelebrate(username);
+          } catch (error) {
+            handledAsComplete = false;
+          }
         }
       }
 
       if (handledAsComplete) {
         localStorage.setItem(STORAGE_KEY, username);
-      } else if (recordError) {
-        showInputForm('❌ 通信エラー: ' + recordError.message + '\n電波の良い場所でもう一度お試しください。');
-      } else if (recordResponse && recordResponse.status === 'success') {
-        displayMessage('✅ ' + recordResponse.message + buildRemainingHint(recordResponse));
-        localStorage.setItem(STORAGE_KEY, username);
-      } else if (recordResponse) {
-        localStorage.removeItem(STORAGE_KEY);
-        showInputForm('⚠️ ' + recordResponse.message);
-      } else {
-        showInputForm('❌ 通信エラーが発生しました。\n電波の良い場所でもう一度お試しください。');
+        saveButton.disabled = false;
+        return;
       }
 
+      if (recordResponse && recordResponse.status === 'success') {
+        displayMessage('✅ ' + recordResponse.message + buildRemainingHint(recordResponse));
+        localStorage.setItem(STORAGE_KEY, username);
+        saveButton.disabled = false;
+        return;
+      }
+
+      if (recordResponse && recordResponse.status !== 'success' && isRateLimitMessage(recordResponse.message)) {
+        // レート制限は「失敗」ではなく「ちょっと待てば通る」状態なので、
+        // 上限回数まで自動でリトライする（無限リトライは禁止）
+        if (retryCount < RATE_LIMIT_MAX_RETRIES) {
+          await waitWithRetryCountdown(RATE_LIMIT_RETRY_WAIT_SEC);
+          return processStamp(username, stampId, retryCount + 1);
+        }
+        localStorage.removeItem(STORAGE_KEY);
+        showInputForm('⚠️ 少し混み合っています。\n少し時間をおいてから、もう一度QRコードを読み取ってください。');
+        saveButton.disabled = false;
+        return;
+      }
+
+      if (recordResponse) {
+        // レート制限以外のエラー応答（例: 無効なスタンプID等）。そのままユーザーに見せる。
+        localStorage.removeItem(STORAGE_KEY);
+        showInputForm('⚠️ ' + recordResponse.message);
+        saveButton.disabled = false;
+        return;
+      }
+
+      if (isTimeout) {
+        showInputForm('❌ 通信に時間がかかっています。\n電波の良い場所でもう一度お試しください。');
+        saveButton.disabled = false;
+        return;
+      }
+
+      showInputForm('❌ 通信エラー' + (recordError ? ': ' + recordError.message : '') + '\n電波の良い場所でもう一度お試しください。');
       saveButton.disabled = false;
     }
 
@@ -374,7 +452,7 @@
     // （recordStampの応答にcomplete系フィールドが無い、古いGAS向け）
     async function checkCompletionAndMaybeCelebrate(username) {
       const url = GAS_URL + '?action=getStamps&username=' + encodeURIComponent(username);
-      const res = await fetch(url);
+      const res = await fetchWithTimeout(url);
       if (!res.ok) return false;
 
       const data = await res.json();
