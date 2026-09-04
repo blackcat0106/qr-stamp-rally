@@ -246,15 +246,6 @@
     // 自動リトライの上限回数（無限リトライ防止）
     const RATE_LIMIT_MAX_RETRIES = 3;
 
-    // 全スタンプのStampID一覧
-    // ※コンプリート判定には使わない（判定はGAS側の応答に一本化。isComplete()参照）。
-    //   isComplete()内のフォールバック計算にのみ使用する保険。
-    const VALID_STAMP_IDS = [
-      'EohdnkZXkc06nHE0FUcl', // Star
-      '7jRAq7mIqxP8apG7X3bw', // Heart
-      'VbzEC3WTJ0pLRxLki0Vu'  // Smile
-    ];
-
     const card = document.getElementById('card');
     const cardWindow = document.querySelector('.card-window');
     const cardContent = document.querySelector('.card-content');
@@ -487,21 +478,15 @@
     }
 
     // 「スタンプが全部そろったか」の判定はGAS側の応答に一本化する（data.complete をそのまま使う）。
-    // 判定ロジックはこの関数1つに隔離しておく。
+    // ▼2026-09-04削除▼ 以前はdata.completeが無い場合の保険として、
+    // VALID_STAMP_IDS（3個のStampIDを直接ハードコード）とstamps配列を突き合わせて
+    // 自前で数えるフォールバックがあったが、GAS側がcompleteに一本化済みであることを
+    // 本人が実機で確認できたため削除した。将来スタンプ数を増やした際に、GASが万一
+    // completeを返さなくなった場合でも、消えた旧IDのままの自前カウントで
+    // 誤ってコンプリート扱いにしてしまう事故を防ぐため。
+    // data.completeが無い応答は「完了ではない」として扱う（安全側）。
     function isComplete(data) {
-      if (typeof data.complete === 'boolean') {
-        return data.complete;
-      }
-      // ▼フォールバック▼ GASがまだcompleteフィールドを返さない場合だけ、
-      // 従来通りstamps配列の中身をVALID_STAMP_IDSと突き合わせて数える。
-      // （GAS側の対応が完了している環境では通らない、移行期間だけの経路）
-      if (Array.isArray(data.stamps)) {
-        const ownedValid = new Set(data.stamps.filter(function (id) {
-          return VALID_STAMP_IDS.indexOf(id) !== -1;
-        }));
-        return ownedValid.size >= VALID_STAMP_IDS.length;
-      }
-      return false;
+      return typeof data.complete === 'boolean' && data.complete;
     }
 
     // dataが「コンプリート」を示していればコンプリート画面を表示する。
