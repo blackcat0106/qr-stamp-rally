@@ -1,0 +1,1135 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QRスタンプラリー</title>
+  <link rel="preload" as="image" href="frame-input.webp">
+  <link rel="preload" as="image" href="frame-done.webp">
+  <!-- [NOOB化で追加] セット②③のNOOB見た目(theme-noob)専用フォント。
+       セット①(はちみつ見た目)では使わないため、はちみつ表示には影響しない。 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;700;900&family=Mochiy+Pop+One&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --honey: #F5A623;
+      --honey-dark: #D8860B;
+      --ink: #5A3E1B;
+      --ink-soft: #8A6836;
+      /* [NOOB化で追加] セット②③専用のNOOBカラー変数(デザイン案比較.html 案4 theme-dと同じ値)。
+         セット①のはちみつ配色とは独立しており、.theme-noob が付いている時だけ使われる。 */
+      --d-yellow: #F5CD30;
+      --d-yellow-soft: #FDF0BE;
+      --d-blue: #0D69AC;
+      --d-blue-dark: #094A78;
+      --d-green: #A4BD47;
+      --d-green-dark: #798D30;
+      --d-ink: #22384A;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Hiragino Maru Gothic ProN", "ヒラギノ丸ゴ ProN", "Yu Gothic", "Meiryo", system-ui, sans-serif;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 6px;
+      background-color: #FFF3D6;
+      background-image: radial-gradient(circle at 50% 0%, #FFFBEF 0%, #FFEFC7 70%);
+      color: var(--ink);
+    }
+    .card {
+      position: relative;
+      width: min(98vw, 560px);
+      /* フレーム画像(1024×683)本来の縦横比に固定する。
+         これにより background-size:100% 100% で描いても絶対に歪まない
+         （箱の比率と画像の比率が常に一致するため）。
+         中身の量で高さを伸縮させない＝伸縮させるのは中身側（.card-window内で吸収）。 */
+      aspect-ratio: 1024 / 683;
+      background-repeat: no-repeat;
+      background-size: 100% 100%;
+      /* 端末幅によっては背景画像の描画がごく僅かに枠の外へにじむことがあるため、
+         確実に箱の内側でクリップする（見た目のはみ出し対策） */
+      overflow: hidden;
+    }
+    .card.state-input {
+      background-image: url("frame-input.webp");
+    }
+    .card.state-status,
+    .card.state-complete {
+      background-image: url("frame-done.webp");
+    }
+    /* フレーム画像の中で実際に白く空いている領域（＝飾りに一切かからない範囲）を
+       画像から実測して割り出した「窓」。中身は必ずこの内側だけに配置する。
+       frame-input.webp と frame-done.webp とで飾りの配置が違うため、窓の位置も別々に持つ。
+       実測値からさらに内側へ安全マージンを足してある。
+       この窓はコンテナクエリの基準にする（cqw/cqh）。中身のフォントサイズは
+       ビューポート幅(vw)ではなく、この窓自体の実サイズを基準に伸縮させる。
+       端末の文字拡大設定（OSの文字サイズ拡大）は px/vw/cqw を問わず一律で拡大されることがあり、
+       clamp()の上限だけでは収めきれないケースが実機で確認されている。
+       その場合は中身(.card-content)をJSで丸ごと等倍縮小(transform: scale)して収める
+       （roblox-mobile-ui-fitと同じ考え方＝枠だけ縮めず中身ごと縮小、クリップやスクロールに逃げない）。
+       overflow: hidden は縮小計算の1px未満の丸め誤差を吸収するための最終ガードのみ。 */
+    .card-window {
+      position: absolute;
+      container-type: size;
+      container-name: cardwin;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      align-items: center;
+      text-align: center;
+      padding: 2cqh 2cqw;
+      overflow: hidden;
+    }
+    /* JSがtransform: scale()で丸ごと縮小する対象。
+       widthを100%にして.card-window内での折り返し幅を固定し、
+       縮小後も水平中央に来るようtransform-originを上端中央にする。 */
+    .card-content {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      transform-origin: top center;
+    }
+    .card.state-input .card-window {
+      inset: 26.4% 24.9% 21.8% 23.8%;
+    }
+    .card.state-status .card-window,
+    .card.state-complete .card-window {
+      inset: 19.5% 22.9% 20.8% 22.8%;
+    }
+    h1 {
+      font-size: clamp(10px, 7cqw, 20px);
+      margin: 0 0 0.15em;
+      line-height: 1.2;
+      letter-spacing: 0.02em;
+    }
+    #status-message {
+      font-size: clamp(9px, 5.5cqw, 15px);
+      font-weight: bold;
+      line-height: 1.3;
+      margin: 0;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+    }
+    .hint {
+      font-size: clamp(7px, 3.6cqw, 11px);
+      color: var(--ink-soft);
+      margin: 0.2em 0 0;
+      line-height: 1.25;
+    }
+    .note {
+      font-size: clamp(8px, 4.2cqw, 12px);
+      font-weight: bold;
+      color: #C0392B;
+      margin: 0 0 0.25em;
+      line-height: 1.25;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+    }
+    input {
+      padding: 0.3em;
+      width: 100%;
+      max-width: 280px;
+      font-size: clamp(10px, 4.6cqw, 15px);
+      text-align: center;
+      border: 2px solid #E8C88A;
+      border-radius: 10px;
+      background: #FFFDF7;
+      color: var(--ink);
+      outline: none;
+      flex-shrink: 0;
+    }
+    input:focus { border-color: var(--honey); }
+    button {
+      margin-top: 0.25em;
+      padding: 0.3em 1em;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: clamp(9px, 4.2cqw, 14px);
+      font-weight: bold;
+      color: #fff;
+      background-color: var(--honey);
+      border: none;
+      border-bottom: 3px solid var(--honey-dark);
+      border-radius: 999px;
+      flex-shrink: 0;
+    }
+    button:active { transform: translateY(2px); border-bottom-width: 1px; }
+    button:disabled { background-color: #C9BFAC; border-bottom-color: #A99F8C; }
+    .hidden { display: none !important; }
+    /* [NOOB化で追加] NOOBカラーの飾り(黄・青・緑の四角)。はちみつ見た目では常に非表示。 */
+    .noob-blocks { display: none; }
+    /* [NOOB化で新規] セット②③専用「ゲームに入る」ボタン。はちみつ見た目には存在しないので
+       .hidden が付いている限りは常に非表示のまま(要素自体はDOMにあるが見えない)。 */
+    .card.state-complete {
+      animation: glow 1.8s ease-in-out infinite;
+    }
+    @keyframes glow {
+      0%, 100% { filter: drop-shadow(0 0 0 rgba(245,166,35,0)); }
+      50% { filter: drop-shadow(0 0 14px rgba(245,166,35,0.55)); }
+    }
+    .complete-badge {
+      font-size: clamp(20px, 16cqw, 46px);
+      line-height: 1;
+      margin: 0 0 0.08em;
+      animation: pop 0.55s cubic-bezier(.34,1.56,.64,1);
+    }
+    @keyframes pop {
+      0% { transform: scale(0.3); opacity: 0; }
+      60% { transform: scale(1.15); opacity: 1; }
+      100% { transform: scale(1); }
+    }
+    #complete-section.repeat .complete-badge { animation: none; }
+    #complete-title {
+      font-size: clamp(12px, 8cqw, 20px);
+      margin: 0 0 0.25em;
+      color: var(--honey-dark);
+    }
+    .pickup-box {
+      background: #FFFDF7;
+      border: 2px solid #E8C88A;
+      border-radius: 14px;
+      padding: 0.45em 0.55em;
+      max-width: 100%;
+    }
+    .pickup-label {
+      font-size: clamp(9px, 4.8cqw, 13px);
+      font-weight: bold;
+      color: var(--honey-dark);
+      margin: 0 0 0.25em;
+    }
+    .pickup-text {
+      font-size: clamp(8.5px, 4.3cqw, 12.5px);
+      line-height: 1.4;
+      margin: 0;
+      /* 最終行が「ょ！」のような1〜2文字だけ孤立しないよう、行の長さを均等化する */
+      text-wrap: balance;
+    }
+    .pickup-text strong { color: #C0392B; }
+    /* 言葉の途中（「ゲーム｜内」など）で改行されないよう、かたまりごとにだけ折り返す */
+    .pickup-text .nb { display: inline-block; }
+
+    /* =====================================================
+       [NOOB化で追加] セット②③専用の見た目(theme-noob)。
+       <html>に .theme-noob クラスが付いた時だけ有効になる上書きCSS。
+       セット①(はちみつのフレーム画像)の見た目は一切変更しない
+       （上のルールは全部そのまま・ここから下は追加のみ）。
+       デザインの元ネタ: デザイン案比較.html の 案4(theme-d NOOBカラー)。
+       ハチミツ版はフレーム画像(frame-input.webp/frame-done.webp)前提の
+       絶対配置(inset%)だが、NOOB版は画像を使わない白いカードなので、
+       ここでは position/aspect-ratio ごと平らな構造に上書きする。
+       ===================================================== */
+    html.theme-noob body {
+      background-color: var(--d-yellow);
+      background-image: none;
+    }
+    html.theme-noob .card {
+      background-image: none !important;
+      aspect-ratio: auto;
+      /* 88vw + bodyの左右padding(6px×2)で、画面の縁にボーダーが接しないよう余白を確保する */
+      width: min(88vw, 400px);
+      background: #fff;
+      border-radius: 22px;
+      border: 5px solid var(--d-blue);
+      box-shadow: 0 6px 0 var(--d-blue-dark);
+      overflow: visible;
+    }
+    html.theme-noob .card-window {
+      position: static;
+      inset: auto;
+      padding: 22px 16px;
+      /* [重要] container-type:size は「幅・高さとも明示指定が無いと中身の高さを
+         0として扱う」仕様のため、そのままだとカードが極薄の帯に潰れて中身が
+         全部隠れる(実機検証で発生・スクショで確認済み)。NOOB版は画像の窓合わせが
+         不要なのでコンテナクエリ自体をやめ、普通の高さ自動(auto)に戻す。
+         その代わり、下のフォントサイズ指定もcqw/cqh単位からpx固定へ全部上書きする
+         （cqw/cqhはコンテナが無いと解決できないため）。 */
+      container-type: normal;
+    }
+    html.theme-noob .card-content {
+      font-family: "Zen Kaku Gothic New", "Hiragino Maru Gothic ProN", sans-serif;
+    }
+    /* [NOOB化で追加] 上のcontainer-type解除に伴い、cqw/cqh単位のclamp()を
+       全部px固定値へ上書きする（デザイン案比較.html 案4の数値に合わせた）。 */
+    html.theme-noob h1 { font-size: 16px; }
+    html.theme-noob #status-message { font-size: 13px; }
+    html.theme-noob .hint { font-size: 11px; }
+    html.theme-noob .note { font-size: 12px; }
+    html.theme-noob input { font-size: 14px; }
+    html.theme-noob button,
+    html.theme-noob #goto-game-button { font-size: 13px; }
+    html.theme-noob .complete-badge { font-size: 44px; }
+    html.theme-noob #complete-title { font-size: 17px; }
+    html.theme-noob .pickup-label { font-size: 11px; }
+    html.theme-noob .pickup-text { font-size: 13px; }
+    html.theme-noob .noob-blocks {
+      display: flex;
+      gap: 5px;
+      margin: 0 0 10px;
+    }
+    html.theme-noob .noob-blocks span {
+      display: block;
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+    }
+    html.theme-noob .noob-blocks .nb-y { background: var(--d-yellow); }
+    html.theme-noob .noob-blocks .nb-b { background: var(--d-blue); }
+    html.theme-noob .noob-blocks .nb-g { background: var(--d-green); }
+    html.theme-noob h1 {
+      font-family: "Mochiy Pop One", "Zen Kaku Gothic New", sans-serif;
+      color: var(--d-blue-dark);
+    }
+    html.theme-noob #status-message,
+    html.theme-noob .hint,
+    html.theme-noob .pickup-text {
+      color: var(--d-ink);
+    }
+    html.theme-noob .note {
+      color: #C0392B;
+    }
+    html.theme-noob input {
+      border-color: var(--d-blue);
+      color: var(--d-ink);
+    }
+    html.theme-noob input:focus { border-color: var(--d-blue-dark); }
+    html.theme-noob button {
+      font-family: "Mochiy Pop One", "Zen Kaku Gothic New", sans-serif;
+      background-color: var(--d-blue);
+      border-bottom-color: var(--d-blue-dark);
+    }
+    html.theme-noob button:disabled { background-color: #C9BFAC; border-bottom-color: #A99F8C; }
+    html.theme-noob .card.state-complete {
+      animation: none;
+    }
+    html.theme-noob #complete-title {
+      color: var(--d-green-dark);
+    }
+    html.theme-noob .pickup-box {
+      background: var(--d-yellow-soft);
+      border: 3px dashed var(--d-green);
+    }
+    html.theme-noob .pickup-label {
+      color: var(--d-green-dark);
+    }
+    html.theme-noob .pickup-text strong {
+      color: var(--d-blue-dark);
+    }
+    /* 入りかたは3つ！(全セット共通のコンプリート案内)。
+       セット②③=カード(白い箱)の中に入る / セット①=はちみつフレームの「下」に続けて置く
+       （フレームの窓は狭く、中に入れると文字が小さくなりすぎるため）。
+       色は変数で切り替え：既定=はちみつ(セット①) / html.theme-noob=NOOB(セット②③)。 */
+    #ways-section {
+      --w-accent: #E8A21A;
+      --w-accent-dark: #A45E10;
+      --w-bg: #FFF6DC;
+      --w-border: #E8A21A;
+      --w-go: #F7C948;
+      --w-go-dark: #E8A21A;
+      --w-go-text: #5A3E1B;
+      --w-copy: #E8A21A;
+      --w-copy-dark: #A45E10;
+      --w-copy-done: #A45E10;
+      --w-head: #A45E10;
+      --w-ink: #5A3E1B;
+      width: min(92vw, 400px);
+      margin: 12px auto 16px;
+      text-align: center;
+      color: var(--w-ink);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    html.theme-noob #ways-section {
+      --w-accent: var(--d-blue);
+      --w-accent-dark: var(--d-blue-dark);
+      --w-bg: var(--d-yellow-soft);
+      --w-border: var(--d-green);
+      --w-go: var(--d-green);
+      --w-go-dark: var(--d-green-dark);
+      --w-go-text: var(--d-ink);
+      --w-copy: var(--d-blue);
+      --w-copy-dark: var(--d-blue-dark);
+      --w-copy-done: var(--d-green-dark);
+      --w-head: var(--d-green-dark);
+      --w-ink: var(--d-ink);
+      width: 100%;
+      margin: 12px 0 0;
+      font-family: "Zen Kaku Gothic New", "Hiragino Maru Gothic ProN", sans-serif;
+    }
+    .ways-heading {
+      font-size: 16px;
+      font-weight: bold;
+      margin: 0 0 8px;
+      color: var(--w-head);
+    }
+    .way {
+      border: 2px dashed var(--w-border);
+      background: var(--w-bg);
+      border-radius: 12px;
+      padding: 8px 10px;
+      margin: 0 0 8px;
+      text-align: left;
+    }
+    .way-h {
+      font-size: 13px;
+      font-weight: bold;
+      color: var(--w-head);
+      margin: 0 0 6px;
+    }
+    .way-h b {
+      display: inline-block;
+      background: var(--w-accent);
+      color: #fff;
+      border-radius: 6px;
+      padding: 0 6px;
+      margin-right: 5px;
+    }
+    #ways-section .way-btn {
+      display: block;
+      width: 100%;
+      margin: 0;
+      padding: 9px 8px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: bold;
+      line-height: 1.3;
+      border: none;
+      border-radius: 999px;
+      flex-shrink: 0;
+    }
+    html.theme-noob #ways-section .way-btn { font-family: "Mochiy Pop One", "Zen Kaku Gothic New", sans-serif; }
+    #ways-section .way-btn:active { transform: translateY(2px); }
+    #ways-section .way-go {
+      background-color: var(--w-go);
+      color: var(--w-go-text);
+      border-bottom: 4px solid var(--w-go-dark);
+    }
+    #ways-section .way-copy {
+      background-color: var(--w-copy);
+      color: #fff;
+      border-bottom: 4px solid var(--w-copy-dark);
+    }
+    #ways-section .way-copy.done {
+      background-color: var(--w-copy-done);
+    }
+    .way-small {
+      font-size: 12px;
+      color: #666;
+      margin: 5px 0 0;
+      text-align: center;
+    }
+    #copy-fallback {
+      margin: 6px 0 0;
+      font-size: 12px;
+      text-align: center;
+    }
+    #copy-fallback code {
+      display: block;
+      margin-top: 2px;
+      font-size: 11px;
+      word-break: break-all;
+      user-select: all;
+      -webkit-user-select: all;
+    }
+    .way-search {
+      /* 1行に収める（小さい画面では少しだけ文字を縮める） */
+      font-size: min(14px, 3.7vw);
+      font-weight: bold;
+      line-height: 1.7;
+      white-space: nowrap;
+    }
+    .way-search span {
+      background: #fff;
+      border: 2px solid var(--w-accent);
+      border-radius: 6px;
+      padding: 0 6px;
+      white-space: nowrap;
+    }
+    .ways-limit {
+      font-size: 13px;
+      font-weight: bold;
+      margin: 4px 0 0;
+      text-align: center;
+    }
+    .noob-lead {
+      font-size: 13px;
+      font-weight: bold;
+      line-height: 1.5;
+      margin: 0;
+      color: var(--d-ink);
+    }
+  </style>
+</head>
+<body>
+  <script>
+    // [NOOB化で追加] ページ全体の見た目(はちみつ/NOOB)を、GASの応答を待たずに
+    // URLのstampIdだけで先に決めて<html>にクラスを付ける。
+    // [ID流出対策 2026-10-11] 生のスタンプIDをページに書かない。URLのstampIdをSHA-256で
+    // ハッシュし、ハッシュ→セットIDの表で引く。crypto.subtleが使えない環境では
+    // 先読みをやめ(undefined)、見た目はGAS応答のscannedSetIdに任せる（従来より少し遅れるだけ）。
+    // 結果は window.__urlSetIdPromise に入れ、下のメインscriptも同じ結果を使う。
+    // ⚠この表のハッシュは「SHA-256(stampId)の16進小文字」。IDを変える時は再計算が必要。
+    (function () {
+      var STAMP_HASH_TO_SET = {
+      '53e69ee89473f1abd0e4aa2d0c8343cfdf24d3072876ce045371de97c363fcb7': '1',
+      '9e7278944a01d88f4b64c2bda519482cf09f1f9e07d2afdd7fd959dc997dd8e2': '1',
+      'b5663bb02e407706705bc1bddab38cd87fd803f27e88051db43e335e0d539b3a': '1',
+      'ac793422c719e2b1309a0ad657087169fb391acaae1f9368301ebf177763e4d1': '2',
+      '78b1c55556e0e9ce12cefbfa46db7c17dbd4515a6a31e5e8d13ade1c23aa7d57': '2',
+      '23a0732c79072e8e28762608edf8018cd68bde8c677092abfae0512be8ce505a': '2',
+      'c13d4310dd976f8dde012c7f1781f2bf266875149723daa3186e7700f54957c8': '3',
+      '3ffa028a2263006bbc212c396e609a8cbe4bd3f80bbf5f503a2200cc5f6a2063': '3',
+      '6111a560cf02b409caece90e5c00e0de9d692a37e1a591c5e30b6faaf8714005': '3'
+      };
+      function sha256Hex(text) {
+        if (!(window.crypto && window.crypto.subtle && window.TextEncoder)) {
+          return Promise.resolve(null);
+        }
+        return window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then(function (buf) {
+          var bytes = new Uint8Array(buf), hex = '';
+          for (var i = 0; i < bytes.length; i++) { hex += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16); }
+          return hex;
+        });
+      }
+      var stampId = new URLSearchParams(window.location.search).get('stampId');
+      // ハッシュ確定(通常は数ミリ秒)までbodyを隠し、「はちみつ→NOOB」のちらつきを防ぐ。
+      // 万一終わらなくても0.5秒で必ず解除する。
+      var pendingStyle = document.createElement('style');
+      pendingStyle.textContent = 'html.hash-pending body{visibility:hidden}';
+      document.head.appendChild(pendingStyle);
+      document.documentElement.classList.add('hash-pending');
+      function releasePending() { document.documentElement.classList.remove('hash-pending'); }
+      setTimeout(releasePending, 500);
+      window.__urlSetIdPromise = (stampId ? sha256Hex(stampId) : Promise.resolve(null)).then(function (hex) {
+        // hex==null: ハッシュ計算できない環境 → undefined（先読みしない・GAS応答に任せる）
+        // 表に無いID → 'unknown'（従来の「未知のIDは汎用表示」と同じ）
+        var setId;
+        if (!stampId) {
+          setId = 'unknown'; // stampIdなし（従来もundefined扱い＝汎用表示）
+        } else if (hex) {
+          setId = Object.prototype.hasOwnProperty.call(STAMP_HASH_TO_SET, hex) ? STAMP_HASH_TO_SET[hex] : 'unknown';
+        }
+        window.__urlSetId = setId;
+        // setIdがundefined(ハッシュ計算不可)の時は「分からない時は汎用(NOOB)表示」の方針で汎用にしておく。
+        // セット①だった場合はGAS応答のscannedSetIdが届いた時点で①の見た目に直る。
+        if (setId !== '1') {
+          document.documentElement.classList.add('theme-noob');
+        }
+        releasePending();
+        return setId;
+      }).catch(function () { releasePending(); return undefined; });
+    })();
+  </script>
+  <div class="card state-status" id="card">
+    <div class="card-window">
+    <div class="card-content">
+    <div class="noob-blocks"><span class="nb-y"></span><span class="nb-b"></span><span class="nb-g"></span></div>
+    <div id="status-section">
+      <h1>QRスタンプラリー</h1>
+      <p id="status-message">データを読み込んでいます...</p>
+    </div>
+
+    <div id="id-input-section" class="hidden">
+      <h1>Robloxユーザー名を入力</h1>
+      <p id="form-note" class="note hidden"></p>
+      <input type="text" id="roblox-username-input" placeholder="例: roblox_user123" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button id="save-button" onclick="saveUsername()">スタンプを記録する</button>
+      <p class="hint">Robloxで使っている名前を入力してね</p>
+    </div>
+
+    <div id="complete-section" class="hidden">
+      <div class="complete-badge" id="complete-badge">🎉</div>
+      <h1 id="complete-title">コンプリート達成！</h1>
+      <!-- セット①(はちみつ)専用。文言・見た目は変更していない。 -->
+      <!-- セット①(はちみつ)専用。文言・見た目は変更していない。 -->
+      <div class="pickup-box" id="pickup-box-set1">
+        <p class="pickup-label">🎁 受け取り場所</p>
+        <p class="pickup-text"><span class="nb">「<strong id="pickup-item">杖</strong>」を</span><span class="nb">ゲーム内</span><span class="nb">「<strong>ピトンの小屋</strong>」の</span><br>
+        <span class="nb">「UGC!!」の</span><span class="nb">看板の前で</span><span class="nb">受け取れるよ！</span></p>
+      </div>
+      <p class="noob-lead hidden" id="pickup-box-noob">Robloxの<br>「<span id="noob-game-name">ゲーム名</span>」に入ると<br>うけとり画面が出るよ！<br>入りかたは3つ！</p>
+      <!-- 「入りかたは3つ！」(#ways-section)は表示時にJSがここへ移す(②③)か、フレームの下に置く(①)。 -->
+    </div>
+    </div>
+  </div>
+
+  <!-- 入りかたは3つ！ (全セット共通)。②③はカード内へ / ①はフレームの下へ、showCompleteが置き場所を決める。 -->
+  <div id="ways-section" class="hidden">
+    <p class="ways-heading" id="ways-heading">入りかたは3つ！</p>
+    <div class="way">
+      <div class="way-h"><b>1</b>このスマホで遊ぶ</div>
+      <button type="button" id="goto-game-button" class="way-btn way-go" onclick="gotoGame()">ゲームに入る</button>
+    </div>
+    <div class="way">
+      <div class="way-h"><b>2</b>ほかのスマホ・アカウントで遊ぶ</div>
+      <button type="button" id="copy-link-button" class="way-btn way-copy" onclick="copyGameLink()">たこ焼きのリンクをコピー</button>
+      <p class="way-small">LINEなどで送って開いてね</p>
+      <div id="copy-fallback" class="hidden">自動コピーできませんでした。長押ししてコピーしてね<code id="copy-fallback-url"></code></div>
+    </div>
+    <div class="way">
+      <div class="way-h"><b>3</b>Robloxで検索する</div>
+      <div class="way-search">Robloxで <span id="search-game-name">たこ焼き</span> と検索して入ろう！</div>
+    </div>
+    <p class="ways-limit hidden" id="ways-limit">先着・数量限定（なくなりしだい終了）</p>
+  </div>
+
+  <script>
+    // ▼▼▼ 設定：GASウェブアプリのURL（/exec で終わるもの） ▼▼▼
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbyJ5ou_wWGgmv1ReOhqMIPB2YFlNLaSRCjIS2QzTdRRmDUM6QXFQ4pOc6MIfZhyEv2I/exec";
+    // ▲▲▲ 設定ここまで ▲▲▲
+
+    // ローカルストレージに保存する際のキー
+    const STORAGE_KEY = 'robloxUsername';
+    // コンプリート演出を「もう見せた」印を付けておくキーの接頭辞（ユーザー名×セットIDごとに保存）。
+    // [3セット化で変更] 以前は「ユーザー名」だけがキーだったため、セット②を完了させた後に
+    // セット③を完了させても、セットを区別できず「もう見せた」扱いになってしまう
+    // （セットは完全に独立したイベントなので、セットごとに別々に演出を出す必要がある）。
+    const COMPLETE_FLAG_PREFIX = 'stampRallyCompleteShown:';
+
+    // fetch1回あたりのタイムアウト（ミリ秒）。GASの応答は実測2〜4秒のため、
+    // 15秒あれば正常な通信を誤って切ることはない。これが無いと、通信が返らない時に
+    // 画面が「確認しています...」等で永久に固まってしまう。
+    const FETCH_TIMEOUT_MS = 15000;
+    // 同一ユーザーの連続登録制限に対する、自動リトライの待ち時間（秒）。
+    // GAS側の RATE_LIMIT_SECONDS（2026-08-19に10秒→3秒へ緩和）に安全マージンを足した値。
+    // ⚠GAS側の秒数を変えたら、ここも合わせて見直すこと。
+    const RATE_LIMIT_RETRY_WAIT_SEC = 5;
+    // 自動リトライの上限回数（無限リトライ防止）
+    const RATE_LIMIT_MAX_RETRIES = 3;
+    // [3セット化で新規] GASのscannedSetIdでもURLのstampIdでもセットが分からなかった時の既定値。
+    // 本人決定(9/28): 分からない時は汎用(NOOB)表示にする。「ピトンの小屋」はセット①と確定した時だけ出す。
+    const DEFAULT_SET_ID = 'unknown';
+
+    // [ID流出対策 2026-10-11] StampID→セットIDの対応表は、生IDを持たないよう
+    // body直下の早期scriptの「SHA-256ハッシュ→セットID」表(早期script内のSTAMP_HASH_TO_SET)に置き換えた。
+    // URLのstampIdから分かるセットは window.__urlSetId（早期scriptが非同期で確定）を使う。
+
+    // ▼▼▼ [NOOB化で新規] 設定：セット②③の「ゲームに入る」ボタンの行き先 ▼▼▼
+    // 景品名(rewardLabel)はGAS(STAMP_SETSのrewardLabel)から自動で届くのでここでは設定不要。
+    // ゲーム名とリンク先だけ、ここにまとめてある。まだ決まっていないのでプレースホルダのまま。
+    // 決まり次第、ここの gameName / gameUrl を書き換えるだけでよい。
+    // [3ways追加] '1'(セット①)もここにまとめた。ゲーム名(gameName)は「Robloxで検索」枠の表示に使う。
+    // 景品名は今まで通りGASのrewardLabel。
+    const NOOB_GAME_CONFIG = {
+      '1': {
+        gameName: 'たこ焼き',
+        gameUrl: 'https://www.roblox.com/games/15102206916'
+      },
+      '2': {
+        gameName: 'たこ焼き',
+        gameUrl: 'https://www.roblox.com/games/15102206916'
+      },
+      '3': {
+        gameName: 'たこ焼き',
+        gameUrl: 'https://www.roblox.com/games/15102206916'
+      }
+    };
+    // ▲▲▲ 設定ここまで ▲▲▲
+
+    // セット②かセット③かを判定する（NOOB見た目にするかどうかの判定にも使う）
+    // セット①と確定した時以外(②③・不明)はすべて汎用(NOOB)表示。
+    function isNoobSetId(setId) {
+      return setId !== '1';
+    }
+
+    // <html>に.theme-noobクラスを付け外しして、ページ全体の見た目を切り替える。
+    // body直下の早期スクリプトが「先読みで」既にクラスを付けている場合もあるが、
+    // GAS応答（scannedSetId）が届いた後にもう一度呼んで最終確定させる。
+    function applyThemeForSetId(setId) {
+      document.documentElement.classList.toggle('theme-noob', isNoobSetId(setId));
+    }
+
+    const card = document.getElementById('card');
+    const cardWindow = document.querySelector('.card-window');
+    const cardContent = document.querySelector('.card-content');
+    const statusSection = document.getElementById('status-section');
+    const inputSection = document.getElementById('id-input-section');
+    const usernameInput = document.getElementById('roblox-username-input');
+    const saveButton = document.getElementById('save-button');
+    const formNote = document.getElementById('form-note');
+    const completeSection = document.getElementById('complete-section');
+    const completeBadge = document.getElementById('complete-badge');
+    const completeTitle = document.getElementById('complete-title');
+    const pickupItem = document.getElementById('pickup-item');
+    const pickupBoxSet1 = document.getElementById('pickup-box-set1');
+    const pickupBoxNoob = document.getElementById('pickup-box-noob');
+    const noobGameName = document.getElementById('noob-game-name');
+    const gotoGameButton = document.getElementById('goto-game-button');
+    const waysSection = document.getElementById('ways-section');
+    const waysHeading = document.getElementById('ways-heading');
+    const waysLimit = document.getElementById('ways-limit');
+    const copyLinkButton = document.getElementById('copy-link-button');
+    const copyFallback = document.getElementById('copy-fallback');
+    const copyFallbackUrl = document.getElementById('copy-fallback-url');
+    const searchGameName = document.getElementById('search-game-name');
+    let copyResetTimer = null;
+
+    // 「ゲームに入る」ボタンから呼ばれる。現在のセットに対応するゲームURLを新規タブで開く。
+    // gotoGameButton には表示中にdataset.gameUrlをセットしてあるので、それを使う。
+    function gotoGame() {
+      const url = gotoGameButton.dataset.gameUrl;
+      if (url) {
+        window.open(url, '_blank', 'noopener');
+      }
+    }
+
+    // 「たこ焼きのリンクをコピー」ボタン。順番に試す：
+    // 1) navigator.clipboard.writeText  2) 非表示textarea+execCommand('copy')
+    // 3) 両方だめならURLを選択しやすい小さい文字で表示する。
+    function copyGameLink() {
+      const url = gotoGameButton.dataset.gameUrl;
+      if (!url) return;
+      const originalText = 'たこ焼きのリンクをコピー';
+      function markDone() {
+        copyFallback.classList.add('hidden');
+        copyLinkButton.textContent = '✓ コピーしたよ！';
+        copyLinkButton.classList.add('done');
+        if (copyResetTimer) clearTimeout(copyResetTimer);
+        copyResetTimer = setTimeout(function () {
+          copyLinkButton.textContent = originalText;
+          copyLinkButton.classList.remove('done');
+          copyResetTimer = null;
+        }, 2000);
+      }
+      function showFallback() {
+        copyFallbackUrl.textContent = url;
+        copyFallback.classList.remove('hidden');
+      }
+      function legacyCopy() {
+        let ok = false;
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '-9999px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        try {
+          ta.focus();
+          ta.select();
+          ta.setSelectionRange(0, url.length);
+          ok = document.execCommand('copy');
+        } catch (e) {
+          ok = false;
+        }
+        document.body.removeChild(ta);
+        if (ok) { markDone(); } else { showFallback(); }
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url).then(markDone, legacyCopy);
+          return;
+        }
+      } catch (e) {
+        // 同期で例外が出た場合も予備処理へ
+      }
+      legacyCopy();
+    }
+
+    // .card-content(中身一式)を.card-window(窓)に収まる倍率へ丸ごと等倍縮小する。
+    // 「枠だけ縮めると中身が壊れる → 収まらない時だけ全体を等倍縮小する」という
+    // roblox-mobile-ui-fitと同じ考え方をWebで行う版。
+    // ・offsetWidth/offsetHeight は transform の影響を受けない「素の設計サイズ」を返すため、
+    //   現在の縮小率を一旦外さなくても正しく測れる。
+    // ・端末の文字サイズ拡大（OS設定）でどれだけ中身が大きくなっても、
+    //   高さが窓に収まる倍率まで自動で縮める（横幅は width:100% で窓幅に固定済み）。
+    // ・「クリップして読めなくする」よりは「小さくてもいいから全文読める」を優先し、
+    //   下限は設けていない（縮小率に理論上の下限はゼロに漸近するが、実際の
+    //   端末の文字拡大設定は上限があるため実用上そこまでは縮まない）。
+    //   naturalH<=0 のような異常値の場合だけ何もしない安全弁を入れてある。
+    function fitCardContent() {
+      if (!cardWindow || !cardContent) return;
+      // 縮小率を一旦リセットしてから測る（前回scaleの影響を受けないように）
+      cardContent.style.transform = 'scale(1)';
+      // clientHeightはpadding込みの箱の高さなので、実際に中身が使える高さは
+      // そこから上下paddingを引いた分になる
+      const winStyle = getComputedStyle(cardWindow);
+      const paddingV = parseFloat(winStyle.paddingTop || '0') + parseFloat(winStyle.paddingBottom || '0');
+      const availH = cardWindow.clientHeight - paddingV;
+      const naturalH = cardContent.scrollHeight;
+      if (naturalH <= 0 || availH <= 0) return;
+      const scale = Math.min(1, availH / naturalH);
+      cardContent.style.transform = 'scale(' + scale + ')';
+    }
+
+    // 中身のサイズ変化（文言更新・画面切替・OSの文字サイズ拡大など）を検知して
+    // 自動で再フィットする。ResizeObserverが見るのはtransform前のレイアウトサイズなので、
+    // fitCardContent自身がtransformを書き換えてもここで無限ループにはならない。
+    if (typeof ResizeObserver !== 'undefined' && cardContent && cardWindow) {
+      const resizeObserver = new ResizeObserver(function () {
+        fitCardContent();
+      });
+      resizeObserver.observe(cardContent);
+      resizeObserver.observe(cardWindow);
+    }
+    window.addEventListener('resize', fitCardContent);
+    window.addEventListener('orientationchange', fitCardContent);
+
+    // URLの ?stampId=XXX からStampIDを取得する
+    function getStampIdFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('stampId');
+    }
+
+    // ページ読み込み時のメイン処理
+    window.addEventListener('load', async function() {
+      const stampId = getStampIdFromUrl();
+      const username = localStorage.getItem(STORAGE_KEY);
+      // [ID流出対策] ハッシュ計算の完了を待つ（数ミリ秒。使えない環境ではundefinedで即復帰）
+      let urlSetId;
+      try { urlSetId = await window.__urlSetIdPromise; } catch (e) { urlSetId = undefined; }
+
+      // [NOOB化で追加] body直下の早期スクリプトでの先読みに続けて、こちらの正の対応表
+      // (ハッシュ表)でも見た目を確定させておく。
+      // 表にないID・ハッシュ計算不可(undefined)は「分からない時は汎用(NOOB)表示」の方針で汎用になる
+      // （従来のSTAMP_ID_TO_SET[未知ID]=undefinedと同じ挙動）。セット①ならGAS応答で①の見た目に直る。
+      applyThemeForSetId(urlSetId);
+
+      if (!stampId) {
+        displayMessage('エラー: QRコードが無効です。');
+        return;
+      }
+
+      if (username) {
+        displayMessage('ようこそ！\nユーザー名: ' + username + '\nスタンプを記録します...');
+        processStamp(username, stampId, 0);
+      } else {
+        showInputForm();
+      }
+    });
+
+    // ユーザーが入力したユーザー名でスタンプ処理を開始する
+    function saveUsername() {
+      const username = usernameInput.value.trim();
+      if (username) {
+        processStamp(username, getStampIdFromUrl(), 0);
+      } else {
+        alert('ユーザー名を入力してください。');
+      }
+    }
+
+    // 指定ミリ秒だけ待つ
+    function sleep(ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+
+    // タイムアウト付きfetch。FETCH_TIMEOUT_MSを過ぎても応答が無い通信は
+    // AbortControllerで強制的に打ち切る（＝画面が永久に固まることを防ぐ）。
+    async function fetchWithTimeout(url, options) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(function () { controller.abort(); }, FETCH_TIMEOUT_MS);
+      try {
+        return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    // GAS側のレート制限エラー（「同一ユーザー10秒」）かどうかを判定する。
+    // ⚠GAS側の応答にエラー種別コード（例: errorCode: 'RATE_LIMIT'）が無いため、
+    //   現状はmessageの文字列一致で判定するしかない。GAS側にエラーコードを
+    //   足せば、この文字列一致より堅い判定にできる。
+    function isRateLimitMessage(message) {
+      return typeof message === 'string' && message.indexOf('早すぎます') !== -1;
+    }
+
+    // 「あとX秒で自動的にもう一度お試しします」のカウントダウンを表示しながら待つ
+    async function waitWithRetryCountdown(totalSeconds) {
+      for (let remaining = totalSeconds; remaining > 0; remaining--) {
+        displayMessage('少し待っています…（あと' + remaining + '秒）\n自動でもう一度お試しします');
+        await sleep(1000);
+      }
+    }
+
+    // [3セット化で新規] 応答から「今回のスキャンがどのセットの話か」を決める。
+    // 優先: GASが返す scannedSetId（新しいGASが必ず付ける）。
+    // 次に URLのstampIdから分かるセット（GASの集計付与が失敗してscannedSetIdが無い時も②③を①に戻さない）。
+    // どちらも無ければ DEFAULT_SET_ID（＝不明→汎用表示）。
+    function resolveSetId(recordResponse) {
+      if (recordResponse && typeof recordResponse.scannedSetId === 'string') {
+        return recordResponse.scannedSetId;
+      }
+      if (typeof window.__urlSetId === 'string') {
+        return window.__urlSetId;
+      }
+      return DEFAULT_SET_ID;
+    }
+
+    // [3セット化で新規] 応答から「そのセット1つ分」のcollected/required/missing/complete/
+    // rewardLabelを取り出す。
+    // 優先: response.sets[setId]（新しいGAS）。
+    // 無ければ response 自体（トップレベルのフィールド）をそのまま使う(古いGAS互換。
+    // 旧GASはセット①の値をトップレベルにしか返さないため、それをそのまま使えば
+    // 従来通りの1セット運用として動く)。
+    function resolveSetData(response, setId) {
+      if (response && response.sets && response.sets[setId]) {
+        return response.sets[setId];
+      }
+      // トップレベルはセット①の値なので、セット①と確定している時だけ使う。
+      // ②③・不明のときに使うと①の完了を②③の完了と取り違えるため、空(=完了扱いしない)を返す。
+      if (setId === '1') {
+        return response;
+      }
+      return {};
+    }
+
+    // GASのAPIを呼び出してスタンプを記録する
+    // retryCount: レート制限による自動リトライの現在の回数（RATE_LIMIT_MAX_RETRIESで上限）
+    async function processStamp(username, stampId, retryCount) {
+      retryCount = retryCount || 0;
+      showStatus();
+      saveButton.disabled = true;
+      displayMessage('サーバーと通信しています...');
+
+      let recordResponse = null;
+      let recordError = null;
+      let isTimeout = false;
+
+      try {
+        const res = await fetchWithTimeout(GAS_URL, {
+          method: 'POST',
+          // Content-Typeをtext/plainにすることで、GASが受け付けられる形式になる
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({
+            action: 'recordStamp',
+            username: username,
+            stampId: stampId
+          })
+        });
+
+        if (!res.ok) {
+          throw new Error('サーバーの応答が異常です (HTTP ' + res.status + ')');
+        }
+
+        recordResponse = await res.json();
+      } catch (error) {
+        recordError = error;
+        isTimeout = !!(error && error.name === 'AbortError');
+      }
+
+      // 「そろったか」の確認（フォールバック含む）は、記録が成功した時だけ行う。
+      // ⚠エラー応答（status !== 'success'）にはcomplete系フィールドが無いため、
+      //   ここで判定しようとすると「記録が拒否されただけ」なのに完了確認の
+      //   フォールバック経路に迷い込んでしまう（今回の不具合の本丸）。
+      // [3セット化で変更] 「今回のスキャンがどのセットか」をscannedSetIdから決め、
+      //   そのセット1つ分のデータ(setData)だけを見て判定するようにした。
+      let handledAsComplete = false;
+      const setId = resolveSetId(recordResponse);
+      // [NOOB化で追加] GAS応答が届いた時点で、正のscannedSetIdに基づいて見た目を確定させる
+      // （URL先読みと食い違うことは通常ないが、念のためここでも確定させておく）。
+      if (recordResponse && recordResponse.status === 'success') {
+        applyThemeForSetId(setId);
+      }
+      if (recordResponse && recordResponse.status === 'success') {
+        const setData = resolveSetData(recordResponse, setId);
+        if (typeof setData.complete === 'boolean') {
+          // 「そろったか」はまず記録リクエストの応答自体（setData.complete）を見る。
+          // GAS側がrecordStampの応答にもcomplete等を含める設計になっているため、
+          // それだけで判定できれば2回目の通信（getStamps）はしない。
+          handledAsComplete = maybeShowComplete(setData, username, setId);
+        } else {
+          // ▼フォールバック▼ 記録は成功したが、GASがまだcomplete系フィールドを
+          // 返さない場合だけ、従来通りgetStampsを別途呼んで確認する（通信が1回増える）
+          displayMessage('確認しています...');
+          try {
+            handledAsComplete = await checkCompletionAndMaybeCelebrate(username, setId);
+          } catch (error) {
+            handledAsComplete = false;
+          }
+        }
+      }
+
+      if (handledAsComplete) {
+        localStorage.setItem(STORAGE_KEY, username);
+        saveButton.disabled = false;
+        return;
+      }
+
+      if (recordResponse && recordResponse.status === 'success') {
+        const setData = resolveSetData(recordResponse, setId);
+        displayMessage('✅ ' + recordResponse.message + buildRemainingHint(setData));
+        localStorage.setItem(STORAGE_KEY, username);
+        saveButton.disabled = false;
+        return;
+      }
+
+      if (recordResponse && recordResponse.status !== 'success' && isRateLimitMessage(recordResponse.message)) {
+        // レート制限は「失敗」ではなく「ちょっと待てば通る」状態なので、
+        // 上限回数まで自動でリトライする（無限リトライは禁止）
+        if (retryCount < RATE_LIMIT_MAX_RETRIES) {
+          await waitWithRetryCountdown(RATE_LIMIT_RETRY_WAIT_SEC);
+          return processStamp(username, stampId, retryCount + 1);
+        }
+        localStorage.removeItem(STORAGE_KEY);
+        showInputForm('⚠️ 少し混み合っています。\n少し時間をおいてから、もう一度QRコードを読み取ってください。');
+        saveButton.disabled = false;
+        return;
+      }
+
+      if (recordResponse) {
+        // レート制限以外のエラー応答（例: 無効なスタンプID等）。そのままユーザーに見せる。
+        localStorage.removeItem(STORAGE_KEY);
+        showInputForm('⚠️ ' + recordResponse.message);
+        saveButton.disabled = false;
+        return;
+      }
+
+      if (isTimeout) {
+        showInputForm('❌ 通信に時間がかかっています。\n電波の良い場所でもう一度お試しください。');
+        saveButton.disabled = false;
+        return;
+      }
+
+      showInputForm('❌ 通信エラー' + (recordError ? ': ' + recordError.message : '') + '\n電波の良い場所でもう一度お試しください。');
+      saveButton.disabled = false;
+    }
+
+    // 「あと◯個」のヒントを組み立てる。dataに collected / required が
+    // 含まれている場合だけ追加する（ページ内に必要数をハードコードしない）。
+    // 含まれていなければ何も追加しない＝これまでの表示のまま。
+    // [3セット化で変更] 引数がGAS応答全体ではなく「1セット分のデータ(setData)」になった。
+    function buildRemainingHint(setData) {
+      if (typeof setData.collected !== 'number' || typeof setData.required !== 'number') {
+        return '';
+      }
+      const remaining = setData.required - setData.collected;
+      if (remaining <= 0) return '';
+      return '\nあと' + remaining + '個！';
+    }
+
+    // 「スタンプが全部そろったか」の判定はGAS側の応答に一本化する（setData.complete をそのまま使う）。
+    // setData.completeが無い応答は「完了ではない」として扱う（安全側）。
+    // [3セット化で変更] 引数が「1セット分のデータ(setData)」になった。
+    function isComplete(setData) {
+      return typeof setData.complete === 'boolean' && setData.complete;
+    }
+
+    // setDataが「コンプリート」を示していればコンプリート画面を表示する。
+    // [3セット化で変更] 完了フラグの「もう見せた」印(localStorage)をユーザー名だけでなく
+    //   セットIDも含めたキーにした。セットは完全に独立したイベントなので、
+    //   セット②を見せた後にセット③を初めて完了した時も、ちゃんと新規のお祝い演出になる。
+    // 戻り値: true=コンプリート画面を表示した / false=未コンプリート
+    function maybeShowComplete(setData, username, setId) {
+      if (!isComplete(setData)) {
+        return false;
+      }
+      const flagKey = COMPLETE_FLAG_PREFIX + username + ':' + setId;
+      const alreadyShown = localStorage.getItem(flagKey) === 'true';
+      showComplete(!alreadyShown, setData.rewardLabel, setId);
+      localStorage.setItem(flagKey, 'true');
+      return true;
+    }
+
+    // フォールバック専用: getStampsを別途呼んでコンプリート判定する
+    // （recordStampの応答にcomplete系フィールドが無い、古いGAS向け）
+    // [3セット化で変更] setIdを受け取り、その1セット分だけを見て判定する。
+    async function checkCompletionAndMaybeCelebrate(username, setId) {
+      const url = GAS_URL + '?action=getStamps&username=' + encodeURIComponent(username);
+      const res = await fetchWithTimeout(url);
+      if (!res.ok) return false;
+
+      const data = await res.json();
+      if (!data || data.status !== 'success') {
+        return false;
+      }
+
+      const setData = resolveSetData(data, setId);
+      return maybeShowComplete(setData, username, setId);
+    }
+
+    // 入力フォームを表示する（受付画面）
+    // noteに文字列を渡すと、フォームの上に赤字のお知らせとして表示する
+    function showInputForm(note) {
+      card.classList.remove('state-status', 'state-complete');
+      card.classList.add('state-input');
+      statusSection.classList.add('hidden');
+      completeSection.classList.add('hidden');
+      inputSection.classList.remove('hidden');
+
+      if (note) {
+        formNote.textContent = note;
+        formNote.classList.remove('hidden');
+      } else {
+        formNote.textContent = '';
+        formNote.classList.add('hidden');
+      }
+    }
+
+    // メッセージ画面を表示する（記録しました画面）
+    function showStatus() {
+      card.classList.remove('state-input', 'state-complete');
+      card.classList.add('state-status');
+      inputSection.classList.add('hidden');
+      completeSection.classList.add('hidden');
+      statusSection.classList.remove('hidden');
+    }
+
+    // コンプリート画面を表示する
+    // isNew: true=たった今全部そろった（お祝い演出） / false=前から全部そろっている（落ち着いた案内）
+    // rewardLabel: [3セット化で新規] 今回のセットの景品名（GASのsets[setId].rewardLabelから）。
+    //   無ければ元々の表示（「杖」）のままにしておく＝古いGAS・想定外の応答でも壊れない。
+    // setId: [NOOB化で新規] "2"/"3"ならNOOB用の受け取り案内(ゲームに入るとすぐ受け取り画面)を、
+    //   "1"と確定した時だけ従来通りセット①の「ピトンの小屋」案内を表示する。
+    function showComplete(isNew, rewardLabel, setId) {
+      card.classList.remove('state-input', 'state-status');
+      card.classList.add('state-complete');
+      statusSection.classList.add('hidden');
+      inputSection.classList.add('hidden');
+      completeSection.classList.remove('hidden');
+      applyThemeForSetId(setId);
+
+      // 行き先とゲーム名(全セット共通の「入りかたは3つ！」で使う)。設定が無い時は既定のたこ焼き。
+      const gameConfig = NOOB_GAME_CONFIG[setId] || { gameName: 'たこ焼き', gameUrl: 'https://www.roblox.com/games/15102206916' };
+      gotoGameButton.dataset.gameUrl = gameConfig.gameUrl;
+      noobGameName.textContent = gameConfig.gameName;
+      searchGameName.textContent = gameConfig.gameName;
+      copyLinkButton.textContent = 'たこ焼きのリンクをコピー';
+      copyLinkButton.classList.remove('done');
+      copyFallback.classList.add('hidden');
+      waysSection.classList.remove('hidden');
+
+      if (isNoobSetId(setId)) {
+        pickupBoxSet1.classList.add('hidden');
+        pickupBoxNoob.classList.remove('hidden');
+        waysHeading.classList.add('hidden');
+        waysLimit.classList.remove('hidden');
+        // ②③: 白いカードの中(タイトル・案内文の下)に置く
+        completeSection.appendChild(waysSection);
+      } else {
+        pickupBoxSet1.classList.remove('hidden');
+        pickupBoxNoob.classList.add('hidden');
+        if (typeof rewardLabel === 'string' && rewardLabel) {
+          pickupItem.textContent = rewardLabel;
+        }
+        waysHeading.classList.remove('hidden');
+        waysLimit.classList.add('hidden');
+        // ①: はちみつフレームの窓は狭いので、3つの枠はフレームの下に続けて置く(縦スクロール)
+        card.after(waysSection);
+      }
+
+      if (isNew) {
+        completeSection.classList.remove('repeat');
+        completeBadge.textContent = '🎉';
+        completeTitle.textContent = 'コンプリート達成！';
+      } else {
+        completeSection.classList.add('repeat');
+        completeBadge.textContent = '✅';
+        completeTitle.textContent = 'もう全部そろってるよ';
+      }
+    }
+
+    // 画面にメッセージを表示する
+    function displayMessage(message) {
+      document.getElementById('status-message').textContent = message;
+    }
+  </script>
+</body>
+</html>
